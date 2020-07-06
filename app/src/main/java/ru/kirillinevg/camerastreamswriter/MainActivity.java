@@ -95,6 +95,7 @@ public class MainActivity extends AppCompatActivity {
             ((TextView)findViewById(R.id.tvResolutions)).setText(Arrays.toString(sizes));
 //            final Size sizeLow = sizes[5];
 //            final Size sizeHigh = sizes[0];
+            final Size sizeHigh = (sizes[0].getWidth() < 1920) ? (sizes[0]) : (new Size(1920, 1080));
 
             manager.openCamera(cameraId, new CameraDevice.StateCallback() {
                 @Override
@@ -117,7 +118,7 @@ public class MainActivity extends AppCompatActivity {
                     mMediaRecorderHigh.setVideoSource(MediaRecorder.VideoSource.SURFACE);
                     mMediaRecorderHigh.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
                     mMediaRecorderHigh.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-                    mMediaRecorderHigh.setVideoSize(1920, 1080);
+                    mMediaRecorderHigh.setVideoSize(sizeHigh.getWidth(), sizeHigh.getHeight());
                     mMediaRecorderHigh.setVideoFrameRate(30);
                     mMediaRecorderHigh.setVideoEncodingBitRate(8*1024*1024);
                     mMediaRecorderHigh.setMaxDuration(0);
@@ -126,7 +127,8 @@ public class MainActivity extends AppCompatActivity {
                     mMediaRecorderHigh.setOutputFile(outputFileHigh.getAbsolutePath());
 
 
-                    mImageReader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 1);
+                    mImageReader = ImageReader.newInstance(sizeHigh.getWidth(), sizeHigh.getHeight(),
+                            ImageFormat.JPEG, 1);
                     mImageReader.setOnImageAvailableListener(mOnImageAvailableListener, null);
 
 
@@ -146,12 +148,14 @@ public class MainActivity extends AppCompatActivity {
                                 mCamera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                         captureRequestBuilder.addTarget(mMediaRecorderLow.getSurface());
                         captureRequestBuilder.addTarget(mMediaRecorderHigh.getSurface());
+                        setUpCaptureRequestBuilder(captureRequestBuilder);
                         mCaptureRequest = captureRequestBuilder.build();
 
                         CaptureRequest.Builder captureBuilder =
                                 mCamera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                         captureBuilder.addTarget(mImageReader.getSurface());
                         captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, 0);
+                        setUpCaptureRequestBuilder(captureBuilder);
                         mImageCaptureRequest = captureBuilder.build();
 
                         mCamera.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
@@ -201,6 +205,15 @@ public class MainActivity extends AppCompatActivity {
             tvStatus.setText("(3) Error: " + e.toString());
         }
     }
+
+
+
+    private void setUpCaptureRequestBuilder(CaptureRequest.Builder builder) {
+        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+    }
+
+
+
 
 
     @Override
