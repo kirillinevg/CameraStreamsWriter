@@ -24,6 +24,7 @@ import android.widget.Button;
 import android.widget.TextView;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -37,9 +38,10 @@ public class MainActivity extends AppCompatActivity {
     CameraDevice mCamera;
     MediaRecorder mMediaRecorderLow;
     MediaRecorder mMediaRecorderHigh;
-    ImageReader mImageReader;
+    ImageReader mImageReaderJPEG;
+    ImageReader mImageReaderYUV;
     CaptureRequest mCaptureRequest;
-    CaptureRequest mImageCaptureRequest;
+    CaptureRequest mCaptureRequestJPEG;
     CameraCaptureSession mCaptureSession;
     boolean mIsRecordingVideo = false;
     File mDirDCIM;
@@ -106,9 +108,9 @@ public class MainActivity extends AppCompatActivity {
                     mMediaRecorderLow.setVideoSource(MediaRecorder.VideoSource.SURFACE);
                     mMediaRecorderLow.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
                     mMediaRecorderLow.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-                    mMediaRecorderLow.setVideoSize(1280, 720);
-                    mMediaRecorderLow.setVideoFrameRate(30);
-                    mMediaRecorderLow.setVideoEncodingBitRate(4*1024*1024);
+                    mMediaRecorderLow.setVideoSize(720, 480);
+                    mMediaRecorderLow.setVideoFrameRate(25);
+                    mMediaRecorderLow.setVideoEncodingBitRate(512*1024);
                     mMediaRecorderLow.setMaxDuration(0);
                     mMediaRecorderLow.setMaxFileSize(0);
                     mMediaRecorderLow.setOrientationHint(0);
@@ -119,18 +121,22 @@ public class MainActivity extends AppCompatActivity {
                     mMediaRecorderHigh.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
                     mMediaRecorderHigh.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
                     mMediaRecorderHigh.setVideoSize(sizeHigh.getWidth(), sizeHigh.getHeight());
-                    mMediaRecorderHigh.setVideoFrameRate(30);
-                    mMediaRecorderHigh.setVideoEncodingBitRate(8*1024*1024);
+                    mMediaRecorderHigh.setVideoFrameRate(25);
+                    mMediaRecorderHigh.setVideoEncodingBitRate(2*1024*1024);
                     mMediaRecorderHigh.setMaxDuration(0);
                     mMediaRecorderHigh.setMaxFileSize(0);
                     mMediaRecorderHigh.setOrientationHint(0);
                     mMediaRecorderHigh.setOutputFile(outputFileHigh.getAbsolutePath());
 
 
-                    mImageReader = ImageReader.newInstance(sizeHigh.getWidth(), sizeHigh.getHeight(),
+                    mImageReaderJPEG = ImageReader.newInstance(sizeHigh.getWidth(), sizeHigh.getHeight(),
                             ImageFormat.JPEG, 1);
-                    mImageReader.setOnImageAvailableListener(mOnImageAvailableListener, null);
+                    mImageReaderJPEG.setOnImageAvailableListener(mOnImageAvailableListenerJPEG, null);
 
+
+                    mImageReaderYUV = ImageReader.newInstance(640, 360,
+                            ImageFormat.YUV_420_888, 1);
+                    mImageReaderYUV.setOnImageAvailableListener(mOnImageAvailableListenerYUV, null);
 
 
                     try {
@@ -142,21 +148,23 @@ public class MainActivity extends AppCompatActivity {
                         List<Surface> surfaces = new ArrayList<>();
                         surfaces.add(mMediaRecorderLow.getSurface());
                         surfaces.add(mMediaRecorderHigh.getSurface());
-                        surfaces.add(mImageReader.getSurface());
-
-                        CaptureRequest.Builder captureRequestBuilder =
-                                mCamera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                        captureRequestBuilder.addTarget(mMediaRecorderLow.getSurface());
-                        captureRequestBuilder.addTarget(mMediaRecorderHigh.getSurface());
-                        setUpCaptureRequestBuilder(captureRequestBuilder);
-                        mCaptureRequest = captureRequestBuilder.build();
+                        surfaces.add(mImageReaderJPEG.getSurface());
+                        surfaces.add(mImageReaderYUV.getSurface());
 
                         CaptureRequest.Builder captureBuilder =
                                 mCamera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                        captureBuilder.addTarget(mImageReader.getSurface());
+                        captureBuilder.addTarget(mMediaRecorderLow.getSurface());
+                        captureBuilder.addTarget(mMediaRecorderHigh.getSurface());
+                        captureBuilder.addTarget(mImageReaderYUV.getSurface());
+                        setUpCaptureRequestBuilder(captureBuilder);
+                        mCaptureRequest = captureBuilder.build();
+
+                        /*CaptureRequest.Builder*/ captureBuilder =
+                                mCamera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                        captureBuilder.addTarget(mImageReaderJPEG.getSurface());
                         captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, 0);
                         setUpCaptureRequestBuilder(captureBuilder);
-                        mImageCaptureRequest = captureBuilder.build();
+                        mCaptureRequestJPEG = captureBuilder.build();
 
                         mCamera.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
                             @Override
@@ -248,9 +256,14 @@ public class MainActivity extends AppCompatActivity {
             mMediaRecorderHigh = null;
         }
 
-        if (mImageReader != null) {
-            mImageReader.close();
-            mImageReader = null;
+        if (mImageReaderJPEG != null) {
+            mImageReaderJPEG.close();
+            mImageReaderJPEG = null;
+        }
+
+        if (mImageReaderYUV != null) {
+            mImageReaderYUV.close();
+            mImageReaderYUV = null;
         }
 
         super.onDestroy();
@@ -264,7 +277,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void run() {
             try {
-                mCaptureSession.capture(mImageCaptureRequest, null, null);
+                mCaptureSession.capture(mCaptureRequestJPEG, null, null);
             } catch (Exception e) {
                 e.printStackTrace();
                 tvStatus.setText("(4) Error: " + e.toString());
@@ -281,7 +294,7 @@ public class MainActivity extends AppCompatActivity {
      * This a callback object for the {@link ImageReader}. "onImageAvailable" will be called when a
      * still image is ready to be saved.
      */
-    private final ImageReader.OnImageAvailableListener mOnImageAvailableListener
+    private final ImageReader.OnImageAvailableListener mOnImageAvailableListenerJPEG
             = new ImageReader.OnImageAvailableListener() {
 
         private int mImageIndex = 0;
@@ -319,6 +332,8 @@ public class MainActivity extends AppCompatActivity {
          */
         private final File mFile;
 
+        private static byte[] mBytes = null;
+
         ImageSaver(Image image, File file) {
             mImage = image;
             mFile = file;
@@ -327,12 +342,14 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void run() {
             ByteBuffer buffer = mImage.getPlanes()[0].getBuffer();
-            byte[] bytes = new byte[buffer.remaining()];
-            buffer.get(bytes);
+            int available = buffer.remaining();
+            if ((mBytes == null) || (mBytes.length < available))
+                mBytes = new byte[available * 2];
+            buffer.get(mBytes, 0, available);
             FileOutputStream output = null;
             try {
                 output = new FileOutputStream(mFile);
-                output.write(bytes);
+                output.write(mBytes, 0, available);
             } catch (IOException e) {
                 e.printStackTrace();
             } finally {
@@ -348,6 +365,69 @@ public class MainActivity extends AppCompatActivity {
         }
 
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    private final ImageReader.OnImageAvailableListener mOnImageAvailableListenerYUV
+            = new ImageReader.OnImageAvailableListener() {
+
+        private int mImageIndex = 0;
+        private byte[] mDataYUV = null;
+
+        public void onImageAvailable(ImageReader imageReader) {
+
+                try (Image image = imageReader.acquireLatestImage()) {
+                    if (image == null) {
+                        return;
+                    }
+                    Image.Plane[] planes = image.getPlanes();
+                    if (planes.length >= 3) {
+                        ByteBuffer bufferY = planes[0].getBuffer();
+                        ByteBuffer bufferU = planes[1].getBuffer();
+                        ByteBuffer bufferV = planes[2].getBuffer();
+                        int lengthY = bufferY.remaining();
+                        int lengthU = bufferU.remaining();
+                        int lengthV = bufferV.remaining();
+                        if (mDataYUV == null)
+                            mDataYUV = new byte[lengthY + lengthU + lengthV];
+                        bufferY.get(mDataYUV, 0, lengthY);
+                        bufferU.get(mDataYUV, lengthY, lengthU);
+                        bufferV.get(mDataYUV, lengthY + lengthU, lengthV);
+
+                        if ((++mImageIndex % 25) == 1)
+                        {
+                            File file = new File(mDirDCIM.getAbsolutePath(),
+                                    String.format("c_%04d_%d", mImageIndex, image.getTimestamp()));
+                            try (FileOutputStream output = new FileOutputStream(file)) {
+                                output.write(mDataYUV);
+                            } catch (FileNotFoundException e) {
+                                e.printStackTrace();
+                            } catch (IOException e) {
+                                e.printStackTrace();
+                            }
+                        }
+                    }
+                }
+
+        }
+
+    };
+
 
 
 }
