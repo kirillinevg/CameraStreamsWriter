@@ -5,6 +5,8 @@ import android.annotation.SuppressLint;
 import android.graphics.ImageFormat;
 import android.media.Image;
 import android.media.ImageReader;
+import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiManager;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.support.v7.app.AppCompatActivity;
@@ -17,11 +19,18 @@ import android.media.MediaRecorder;
 import android.os.Bundle;
 import android.hardware.camera2.*;
 import android.os.Environment;
+import android.util.Log;
 import android.util.Size;
+import android.view.KeyEvent;
 import android.view.Surface;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.TextView;
+
+import com.guichaguri.minimalftp.FTPServer;
+import com.guichaguri.minimalftp.impl.NativeFileSystem;
+import com.guichaguri.minimalftp.impl.NoOpAuthenticator;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -31,24 +40,32 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 
 public class MainActivity extends AppCompatActivity {
 
-    CameraDevice mCamera;
-    MediaRecorder mMediaRecorderLow;
-    MediaRecorder mMediaRecorderHigh;
-    ImageReader mImageReaderJPEG;
-    ImageReader mImageReaderYUV;
-    CaptureRequest mCaptureRequest;
-    CaptureRequest mCaptureRequestJPEG;
-    CameraCaptureSession mCaptureSession;
-    boolean mIsRecordingVideo = false;
-    File mDirDCIM;
+    static class CameraItem {
+        CameraDevice            camera;
+        String                  cameraId;
+        MediaRecorder           mediaRecorder;
+        CameraCaptureSession    captureSession;
+        boolean                 isOpeningCamera;
+        boolean                 isWritingVideo;
+        File                    filePathWriting;
+        File                    filePathFinished;
+    }
+
+    CameraItem [] mCameras;
+
 
     TextView tvStatus;
 
-    Handler mImageHandler;
+
+    File mDirDCIM;
+
+
+    FTPServer mFtpServer;
 
 
     @Override
@@ -56,162 +73,181 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
         tvStatus = findViewById(R.id.tvStatus);
-
-        mImageHandler = new Handler();
-    }
-
-    @SuppressLint("MissingPermission")
-    @Override
-    protected void onResume() {
-        super.onResume();
-
-        if (mDirDCIM != null)
-            return;
-
-
-
-
-
 
         mDirDCIM = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
                 "CameraStreamsWriter");
+        mDirDCIM.mkdirs();
 
-        final File outputFileLow = new File(mDirDCIM.getAbsolutePath(), "a_720p_.mp4");
-        final File outputFileHigh = new File(mDirDCIM.getAbsolutePath(), "a_1080p_.mp4");
+        startFtpServer(mDirDCIM);
 
+        connectToWifi("tvhelp", "1q2w3e4r");
+
+        mCameras = new CameraItem[2];
+        mCameras[0] = new CameraItem();
+        mCameras[0].filePathWriting = new File(mDirDCIM, "first.writing");
+        mCameras[0].filePathFinished = new File(mDirDCIM, "first.mp4");
+        mCameras[1] = new CameraItem();
+        mCameras[1].filePathWriting = new File(mDirDCIM, "second.writing");
+        mCameras[1].filePathFinished = new File(mDirDCIM, "second.mp4");
+
+        CameraManager manager = (CameraManager) getSystemService(CAMERA_SERVICE);
+        try {
+            String[] cameras = manager.getCameraIdList();
+            Log.e("xxx", "cameras: " + Arrays.toString(cameras));
+            int n = Math.min(cameras.length, mCameras.length);
+            for (int i = 0; i < n; i++) {
+                mCameras[i].cameraId = cameras[i];
+            }
+        } catch (CameraAccessException e) {
+            e.printStackTrace();
+        }
+    }
+
+
+
+    CameraItem findCameraItem(String cameraId) {
+        for (int i = 0; i < mCameras.length; i++) {
+            if (Objects.equals(mCameras[i].cameraId, cameraId)) {
+                return mCameras[i];
+            }
+        }
+
+        return null;
+    }
+
+
+
+
+
+
+    @SuppressLint("MissingPermission")
+    void startWriting(final CameraItem item) {
+        if (item.cameraId == null || item.isOpeningCamera || item.isWritingVideo)
+            return;
+
+        stopWriting(item);
+
+        String cameraId = item.cameraId;
 
         CameraManager manager = (CameraManager) getSystemService(CAMERA_SERVICE);
 
         try {
+//            CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
+//            StreamConfigurationMap configs = characteristics.get(
+//                    CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+//            Size[] sizes = configs.getOutputSizes(MediaRecorder.class);
+//            ((TextView)findViewById(R.id.tvResolutions)).setText(Arrays.toString(sizes));
+//            Log.e("xxx", "Resolutions: " + Arrays.toString(sizes));
+////            final Size sizeHigh = sizes[0];
+//            final Size sizeHigh = (sizes[0].getWidth() < 1920) ? (sizes[0]) : (new Size(1920, 1080));
 
-            mDirDCIM.mkdirs();
+            final Size sizeHigh = new Size(1280, 720);
 
-            String[] cameras = manager.getCameraIdList();
-            String cameraId = cameras[0];
-
-            CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
-            StreamConfigurationMap configs = characteristics.get(
-                    CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-            Size[] sizes = configs.getOutputSizes(MediaRecorder.class);
-            ((TextView)findViewById(R.id.tvResolutions)).setText(Arrays.toString(sizes));
-//            final Size sizeLow = sizes[5];
-//            final Size sizeHigh = sizes[0];
-            final Size sizeHigh = (sizes[0].getWidth() < 1920) ? (sizes[0]) : (new Size(1920, 1080));
+            item.isOpeningCamera = true;
 
             manager.openCamera(cameraId, new CameraDevice.StateCallback() {
                 @Override
                 public void onOpened(CameraDevice camera) {
-                    mCamera = camera;
-
-                    mMediaRecorderLow = new MediaRecorder();
-                    mMediaRecorderLow.setVideoSource(MediaRecorder.VideoSource.SURFACE);
-                    mMediaRecorderLow.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-                    mMediaRecorderLow.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-                    mMediaRecorderLow.setVideoSize(720, 480);
-                    mMediaRecorderLow.setVideoFrameRate(25);
-                    mMediaRecorderLow.setVideoEncodingBitRate(512*1024);
-                    mMediaRecorderLow.setMaxDuration(0);
-                    mMediaRecorderLow.setMaxFileSize(0);
-                    mMediaRecorderLow.setOrientationHint(0);
-                    mMediaRecorderLow.setOutputFile(outputFileLow.getAbsolutePath());
-
-                    mMediaRecorderHigh = new MediaRecorder();
-                    mMediaRecorderHigh.setVideoSource(MediaRecorder.VideoSource.SURFACE);
-                    mMediaRecorderHigh.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-                    mMediaRecorderHigh.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-                    mMediaRecorderHigh.setVideoSize(sizeHigh.getWidth(), sizeHigh.getHeight());
-                    mMediaRecorderHigh.setVideoFrameRate(25);
-                    mMediaRecorderHigh.setVideoEncodingBitRate(2*1024*1024);
-                    mMediaRecorderHigh.setMaxDuration(0);
-                    mMediaRecorderHigh.setMaxFileSize(0);
-                    mMediaRecorderHigh.setOrientationHint(0);
-                    mMediaRecorderHigh.setOutputFile(outputFileHigh.getAbsolutePath());
+                    item.camera = camera;
 
 
-                    mImageReaderJPEG = ImageReader.newInstance(sizeHigh.getWidth(), sizeHigh.getHeight(),
-                            ImageFormat.JPEG, 1);
-                    mImageReaderJPEG.setOnImageAvailableListener(mOnImageAvailableListenerJPEG, null);
 
+                    item.mediaRecorder = new MediaRecorder();
+                    item.mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+                    item.mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+                    item.mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+                    item.mediaRecorder.setVideoSize(sizeHigh.getWidth(), sizeHigh.getHeight());
+                    item.mediaRecorder.setVideoFrameRate(25);
+                    item.mediaRecorder.setVideoEncodingBitRate(4*1024*1024);
+                    item.mediaRecorder.setMaxDuration(0);
+                    item.mediaRecorder.setMaxFileSize(0);
+                    item.mediaRecorder.setOrientationHint(0);
+                    item.mediaRecorder.setOutputFile(item.filePathWriting.getAbsolutePath());
 
-                    mImageReaderYUV = ImageReader.newInstance(640, 360,
-                            ImageFormat.YUV_420_888, 1);
-                    mImageReaderYUV.setOnImageAvailableListener(mOnImageAvailableListenerYUV, null);
 
 
                     try {
 
 
-                        mMediaRecorderLow.prepare();
-                        mMediaRecorderHigh.prepare();
+
+                        item.mediaRecorder.prepare();
 
                         List<Surface> surfaces = new ArrayList<>();
-                        surfaces.add(mMediaRecorderLow.getSurface());
-                        surfaces.add(mMediaRecorderHigh.getSurface());
-                        surfaces.add(mImageReaderJPEG.getSurface());
-                        surfaces.add(mImageReaderYUV.getSurface());
+                        surfaces.add(item.mediaRecorder.getSurface());
 
-                        CaptureRequest.Builder captureBuilder =
-                                mCamera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                        captureBuilder.addTarget(mMediaRecorderLow.getSurface());
-                        captureBuilder.addTarget(mMediaRecorderHigh.getSurface());
-                        captureBuilder.addTarget(mImageReaderYUV.getSurface());
+
+
+                        CaptureRequest.Builder captureBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                        captureBuilder.addTarget(item.mediaRecorder.getSurface());
                         setUpCaptureRequestBuilder(captureBuilder);
-                        mCaptureRequest = captureBuilder.build();
+                        final CaptureRequest captureRequest = captureBuilder.build();
 
-                        /*CaptureRequest.Builder*/ captureBuilder =
-                                mCamera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                        captureBuilder.addTarget(mImageReaderJPEG.getSurface());
-                        captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, 0);
-                        setUpCaptureRequestBuilder(captureBuilder);
-                        mCaptureRequestJPEG = captureBuilder.build();
 
-                        mCamera.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
+
+                        camera.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
                             @Override
                             public void onConfigured(CameraCaptureSession session) {
-                                mCaptureSession = session;
+                                item.captureSession = session;
                                 try {
-                                    mCaptureSession.setRepeatingRequest(mCaptureRequest, null, null);
+                                    item.captureSession.setRepeatingRequest(captureRequest, null, null);
 
-                                    mImageHandler.postDelayed(mImageRunnable, 1);
 
-                                    mMediaRecorderLow.start();
-                                    mMediaRecorderHigh.start();
-                                    mIsRecordingVideo = true;
+
+
+                                    item.mediaRecorder.start();
+                                    item.isWritingVideo = true;
 
                                     tvStatus.setText("The recording is successfully started.\nClick BACK to finish recording.");
+                                    Log.e("xxx", "The recording is successfully started.\nClick BACK to finish recording.");
+
+
                                 } catch (Exception e) {
                                     e.printStackTrace();
                                     tvStatus.setText("(1) Error: " + e.toString());
+                                    Log.e("xxx", "(1) Error: " + e.toString());
                                 }
+
+                                item.isOpeningCamera = false;
                             }
 
                             @Override
                             public void onConfigureFailed(CameraCaptureSession session) {
-                                ;
+                                tvStatus.setText("(4) Error: onConfigureFailed");
+                                Log.e("xxx", "(4) Error: onConfigureFailed");
+                                item.isOpeningCamera = false;
                             }
                         }, null);
                     } catch (Exception e) {
                         e.printStackTrace();
                         tvStatus.setText("(2) Error: " + e.toString());
+                        Log.e("xxx", "(2) Error: " + e.toString());
+                        item.isOpeningCamera = false;
                     }
                 }
 
                 @Override
                 public void onDisconnected(CameraDevice camera) {
-
+                    item.isOpeningCamera = false;
                 }
 
                 @Override
                 public void onError(CameraDevice camera, int error) {
-
+                    Log.e("xxx", "(err) Error: " + error);
+                    item.isOpeningCamera = false;
                 }
             }, null);
 
         } catch (Exception e) {
             e.printStackTrace();
             tvStatus.setText("(3) Error: " + e.toString());
+            Log.e("xxx", "(3) Error: " + e.toString());
+            Log.e("xxx", Log.getStackTraceString(e));
+            item.isOpeningCamera = false;
         }
+
     }
 
 
@@ -224,47 +260,44 @@ public class MainActivity extends AppCompatActivity {
 
 
 
+    void stopWriting(CameraItem item) {
+        if (item.isWritingVideo) {
+            item.mediaRecorder.stop();
+            item.mediaRecorder.reset();
+        }
+
+        if (item.captureSession != null) {
+            item.captureSession.close();
+            item.captureSession = null;
+        }
+
+        if (item.camera != null) {
+            item.camera.close();
+            item.camera = null;
+        }
+
+        if (item.mediaRecorder != null) {
+            item.mediaRecorder.release();
+            item.mediaRecorder = null;
+        }
+
+        if (item.isWritingVideo) {
+            item.isWritingVideo = false;
+            item.filePathFinished.delete();
+            item.filePathWriting.renameTo(item.filePathFinished);
+        }
+    }
+
+
+
+
+
     @Override
     protected void onDestroy() {
-        mImageHandler.removeCallbacks(mImageRunnable);
+        for (CameraItem item : mCameras)
+            stopWriting(item);
 
-        if (mIsRecordingVideo) {
-            mIsRecordingVideo = false;
-            mMediaRecorderLow.stop();
-            mMediaRecorderLow.reset();
-            mMediaRecorderHigh.stop();
-            mMediaRecorderHigh.reset();
-        }
-
-        if (mCaptureSession != null) {
-            mCaptureSession.close();
-            mCaptureSession = null;
-        }
-
-        if (mCamera != null) {
-            mCamera.close();
-            mCamera = null;
-        }
-
-        if (mMediaRecorderLow != null) {
-            mMediaRecorderLow.release();
-            mMediaRecorderLow = null;
-        }
-
-        if (mMediaRecorderHigh != null) {
-            mMediaRecorderHigh.release();
-            mMediaRecorderHigh = null;
-        }
-
-        if (mImageReaderJPEG != null) {
-            mImageReaderJPEG.close();
-            mImageReaderJPEG = null;
-        }
-
-        if (mImageReaderYUV != null) {
-            mImageReaderYUV.close();
-            mImageReaderYUV = null;
-        }
+        stopFtpServer();
 
         super.onDestroy();
     }
@@ -272,98 +305,29 @@ public class MainActivity extends AppCompatActivity {
 
 
 
-    private final Runnable mImageRunnable = new Runnable() {
-
-        @Override
-        public void run() {
-            try {
-                mCaptureSession.capture(mCaptureRequestJPEG, null, null);
-            } catch (Exception e) {
-                e.printStackTrace();
-                tvStatus.setText("(4) Error: " + e.toString());
-            }
-        }
-
-    };
 
 
-
-
-
-    /**
-     * This a callback object for the {@link ImageReader}. "onImageAvailable" will be called when a
-     * still image is ready to be saved.
-     */
-    private final ImageReader.OnImageAvailableListener mOnImageAvailableListenerJPEG
-            = new ImageReader.OnImageAvailableListener() {
-
-        private int mImageIndex = 0;
-
-        @Override
-        public void onImageAvailable(ImageReader reader) {
-            ++mImageIndex;
-
-            //if (mImageIndex < 60)
-                mImageHandler.postDelayed(mImageRunnable, 700);
-
-            File file = new File(mDirDCIM.getAbsolutePath(),
-                    String.format("b_1080p_%04d.jpg", mImageIndex));
-            ImageSaver saver = new ImageSaver(reader.acquireNextImage(), file);
-            saver.run();
-        }
-
-    };
-
-
-
-
-
-    /**
-     * Saves a JPEG {@link Image} into the specified {@link File}.
-     */
-    private static class ImageSaver implements Runnable {
-
-        /**
-         * The JPEG image
-         */
-        private final Image mImage;
-        /**
-         * The file we save the image into.
-         */
-        private final File mFile;
-
-        private static byte[] mBytes = null;
-
-        ImageSaver(Image image, File file) {
-            mImage = image;
-            mFile = file;
-        }
-
-        @Override
-        public void run() {
-            ByteBuffer buffer = mImage.getPlanes()[0].getBuffer();
-            int available = buffer.remaining();
-            if ((mBytes == null) || (mBytes.length < available))
-                mBytes = new byte[available * 2];
-            buffer.get(mBytes, 0, available);
-            FileOutputStream output = null;
-            try {
-                output = new FileOutputStream(mFile);
-                output.write(mBytes, 0, available);
-            } catch (IOException e) {
-                e.printStackTrace();
-            } finally {
-                mImage.close();
-                if (null != output) {
-                    try {
-                        output.close();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        int action = event.getAction();
+        int keyCode = event.getKeyCode();
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_VOLUME_UP:
+                if (action == KeyEvent.ACTION_DOWN) {
+                    Log.e("xxx", "KEYCODE_VOLUME_UP");
+                    for (int i = mCameras.length - 1; i >= 0; i--)
+                        startWriting(mCameras[i]);
                 }
-            }
+                return true;
+            case KeyEvent.KEYCODE_VOLUME_DOWN:
+                if (action == KeyEvent.ACTION_DOWN) {
+                    Log.e("xxx", "KEYCODE_VOLUME_DOWN");
+                    for (CameraItem item : mCameras)
+                        stopWriting(item);
+                }
+                return true;
         }
-
+        return super.dispatchKeyEvent(event);
     }
 
 
@@ -374,59 +338,75 @@ public class MainActivity extends AppCompatActivity {
 
 
 
+    private boolean startFtpServer(File root) {
+        if (mFtpServer != null)
+            return true;
 
+        // Uses the current working directory as the root
+        //File root = new File(System.getProperty("user.dir"));
 
+        // Creates a native file system
+        NativeFileSystem fs = new NativeFileSystem(root);
 
+        // Creates a noop authenticator
+        NoOpAuthenticator auth = new NoOpAuthenticator(fs);
 
+        // Creates the server with the authenticator
+        mFtpServer = new FTPServer(auth);
 
-
-
-
-
-    private final ImageReader.OnImageAvailableListener mOnImageAvailableListenerYUV
-            = new ImageReader.OnImageAvailableListener() {
-
-        private int mImageIndex = 0;
-        private byte[] mDataYUV = null;
-
-        public void onImageAvailable(ImageReader imageReader) {
-
-                try (Image image = imageReader.acquireLatestImage()) {
-                    if (image == null) {
-                        return;
-                    }
-                    Image.Plane[] planes = image.getPlanes();
-                    if (planes.length >= 3) {
-                        ByteBuffer bufferY = planes[0].getBuffer();
-                        ByteBuffer bufferU = planes[1].getBuffer();
-                        ByteBuffer bufferV = planes[2].getBuffer();
-                        int lengthY = bufferY.remaining();
-                        int lengthU = bufferU.remaining();
-                        int lengthV = bufferV.remaining();
-                        if (mDataYUV == null)
-                            mDataYUV = new byte[lengthY + lengthU + lengthV];
-                        bufferY.get(mDataYUV, 0, lengthY);
-                        bufferU.get(mDataYUV, lengthY, lengthU);
-                        bufferV.get(mDataYUV, lengthY + lengthU, lengthV);
-
-                        if ((++mImageIndex % 25) == 1)
-                        {
-                            File file = new File(mDirDCIM.getAbsolutePath(),
-                                    String.format("c_%04d_%d", mImageIndex, image.getTimestamp()));
-                            try (FileOutputStream output = new FileOutputStream(file)) {
-                                output.write(mDataYUV);
-                            } catch (FileNotFoundException e) {
-                                e.printStackTrace();
-                            } catch (IOException e) {
-                                e.printStackTrace();
-                            }
-                        }
-                    }
-                }
-
+        // Start listening asynchronously
+        try {
+            mFtpServer.listen(2121);
+        } catch (IOException e) {
+            Log.e("xxxFTP", Log.getStackTraceString(e));
+            stopFtpServer();
         }
 
-    };
+        return (mFtpServer != null);
+    }
+
+    private void stopFtpServer() {
+        if (mFtpServer != null) {
+            try {
+                mFtpServer.close();
+            } catch (IOException e) {
+            }
+            mFtpServer = null;
+        }
+    }
+
+
+
+
+
+
+
+
+    private void connectToWifi(String networkSSID, String networkPassword) {
+        WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+
+        if (!wifiManager.isWifiEnabled()) {
+            wifiManager.setWifiEnabled(true);
+        }
+
+        WifiConfiguration conf = new WifiConfiguration();
+        conf.SSID = String.format("\"%s\"", networkSSID);
+        conf.preSharedKey = String.format("\"%s\"", networkPassword);
+
+        int netId = wifiManager.addNetwork(conf);
+        wifiManager.disconnect();
+        wifiManager.enableNetwork(netId, true);
+        wifiManager.reconnect();
+    }
+
+
+
+
+
+
+
+
+
 
 
 
